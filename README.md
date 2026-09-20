@@ -257,3 +257,4 @@ Open items:
 - QEMU Standard VGA (16MB fb): qemu.org/docs/master/specs/standard-vga.html
 - bochs GEM SHMEM + shadow-plane: dri-devel «drm/bochs: Use GEM SHMEM helpers» (2024)
 - Исходные срезы для этого расследования: `docs/sources/`
+- Дословные артефакты конфигурации этапа (host/VM/guest, udev-эксперименты, systemd-юниты, замеры): `docs/final-configs.md`

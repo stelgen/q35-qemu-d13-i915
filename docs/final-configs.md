@@ -107,6 +107,6 @@ Unknown kernel command line parameters "BOOT_IMAGE=/boot/vmlinuz-...", will be p
 "Cannot find any crtc or sizes" на passthrough без мониторов.
 
 ## Результаты тестов (замеры чата)
-- VAAPI encode (h264_vaapi через renderD128): 3.17x realtime → позже 4.71x (после libmfx-фикса в README)
+- VAAPI encode (h264_vaapi через renderD128): 3.17x realtime (ранний замер, эпоха 6.12) → 4.71x (свежий замер, 20.09; НЕ зависит от libmfx-фикса — это разные стеки)
 - QSV/MFX (h264_qsv): до `apt install libmfx-gen1.2` — MFX session -9; после — 3.03x realtime
 - glxinfo: "Mesa Intel(R) Graphics (ADL-N)" — iris (не llvmpipe)
