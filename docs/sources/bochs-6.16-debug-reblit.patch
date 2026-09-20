@@ -1,0 +1,156 @@
+--- a/drivers/gpu/drm/tiny/bochs.c
++++ b/drivers/gpu/drm/tiny/bochs.c
+@@ -4,10 +4,12 @@
+ #include <linux/aperture.h>
+ #include <linux/module.h>
+ #include <linux/pci.h>
++#include <linux/workqueue.h>
+ 
+ #include <drm/clients/drm_client_setup.h>
+ #include <drm/drm_atomic.h>
+ #include <drm/drm_atomic_helper.h>
++#include <drm/drm_rect.h>
+ #include <drm/drm_damage_helper.h>
+ #include <drm/drm_drv.h>
+ #include <drm/drm_edid.h>
+@@ -67,6 +69,22 @@
+ MODULE_PARM_DESC(defx, "default x resolution");
+ MODULE_PARM_DESC(defy, "default y resolution");
+ 
++static bool bochs_debug = true;
++module_param_named(debug, bochs_debug, bool, 0444);
++MODULE_PARM_DESC(debug, "log every plane update (fb pointer, imported state)");
++
++static bool bochs_force_full_update;
++module_param_named(force_full_update, bochs_force_full_update, bool, 0444);
++MODULE_PARM_DESC(force_full_update, "always copy the whole fb into VRAM, ignore damage clips");
++
++static bool bochs_reject_imported;
++module_param_named(reject_imported, bochs_reject_imported, bool, 0444);
++MODULE_PARM_DESC(reject_imported, "fail atomic commits with imported (PRIME) framebuffers");
++
++static unsigned int bochs_reblit_ms;
++module_param_named(reblit_ms, bochs_reblit_ms, uint, 0444);
++MODULE_PARM_DESC(reblit_ms, "re-blit current fb into VRAM every N ms, 0=off (experiment)");
++
+ /* ---------------------------------------------------------------------- */
+ 
+ enum bochs_types {
+@@ -92,6 +110,10 @@
+ 	u16 yres_virtual;
+ 	u32 stride;
+ 	u32 bpp;
++
++	/* experiment/debug */
++	unsigned int frames;
++	struct delayed_work reblit_work;
+ 
+ 	/* drm */
+ 	struct drm_plane primary_plane;
+@@ -409,6 +431,37 @@
+ 
+ /* ---------------------------------------------------------------------- */
+ 
++static void bochs_reblit_work(struct work_struct *work)
++{
++	struct bochs_device *bochs = container_of(work, struct bochs_device,
++						  reblit_work.work);
++	struct drm_plane *plane = &bochs->primary_plane;
++	struct drm_framebuffer *fb = plane->state->fb;
++
++	/*
++	 * Experiment: re-copy the current plane fb into VRAM without any
++	 * userspace atomic commit (best-effort, no locking, debug only).
++	 * If the picture comes alive while userspace is idle, the compositor
++	 * stopped committing; the kernel copy path itself works.
++	 */
++	if (fb && bochs->stride) {
++		struct iosys_map map[DRM_FORMAT_MAX_PLANES] = { };
++		struct iosys_map data[DRM_FORMAT_MAX_PLANES] = { };
++		struct drm_rect full = DRM_RECT_INIT(0, 0, fb->width, fb->height);
++		struct iosys_map dst = IOSYS_MAP_INIT_VADDR_IOMEM(bochs->fb_map);
++
++		if (!drm_gem_fb_vmap(fb, map, data)) {
++			iosys_map_incr(&dst, drm_fb_clip_offset(fb->pitches[0],
++							       fb->format, &full));
++			drm_fb_memcpy(&dst, fb->pitches, data, fb, &full);
++			drm_gem_fb_vunmap(fb, map);
++		}
++	}
++
++	schedule_delayed_work(&bochs->reblit_work,
++			      msecs_to_jiffies(bochs_reblit_ms));
++}
++
+ static const uint32_t bochs_primary_plane_formats[] = {
+ 	DRM_FORMAT_XRGB8888,
+ 	DRM_FORMAT_BGRX8888,
+@@ -421,6 +474,13 @@
+ 	struct drm_crtc *new_crtc = new_plane_state->crtc;
+ 	struct drm_crtc_state *new_crtc_state = NULL;
+ 	int ret;
++
++	if (bochs_reject_imported && new_plane_state->fb) {
++		struct drm_gem_object *obj = drm_gem_fb_get_obj(new_plane_state->fb, 0);
++
++		if (obj && obj->import_attach)
++			return -EINVAL;
++	}
+ 
+ 	if (new_crtc)
+ 		new_crtc_state = drm_atomic_get_new_crtc_state(state, new_crtc);
+@@ -452,12 +512,28 @@
+ 	if (!fb || !bochs->stride)
+ 		return;
+ 
+-	drm_atomic_helper_damage_iter_init(&iter, old_plane_state, plane_state);
+-	drm_atomic_for_each_plane_damage(&iter, &damage) {
++	if (bochs_debug) {
++		struct drm_gem_object *obj = drm_gem_fb_get_obj(fb, 0);
++
++		drm_info(dev, "update #%u: fb=%px obj=%px imported=%d %ux%u\n",
++			 ++bochs->frames, fb, obj,
++			 obj ? !!obj->import_attach : -1, fb->width, fb->height);
++	}
++
++	if (bochs_force_full_update) {
++		struct drm_rect full = DRM_RECT_INIT(0, 0, fb->width, fb->height);
+ 		struct iosys_map dst = IOSYS_MAP_INIT_VADDR_IOMEM(bochs->fb_map);
+ 
+-		iosys_map_incr(&dst, drm_fb_clip_offset(fb->pitches[0], fb->format, &damage));
+-		drm_fb_memcpy(&dst, fb->pitches, shadow_plane_state->data, fb, &damage);
++		iosys_map_incr(&dst, drm_fb_clip_offset(fb->pitches[0], fb->format, &full));
++		drm_fb_memcpy(&dst, fb->pitches, shadow_plane_state->data, fb, &full);
++	} else {
++		drm_atomic_helper_damage_iter_init(&iter, old_plane_state, plane_state);
++		drm_atomic_for_each_plane_damage(&iter, &damage) {
++			struct iosys_map dst = IOSYS_MAP_INIT_VADDR_IOMEM(bochs->fb_map);
++
++			iosys_map_incr(&dst, drm_fb_clip_offset(fb->pitches[0], fb->format, &damage));
++			drm_fb_memcpy(&dst, fb->pitches, shadow_plane_state->data, fb, &damage);
++		}
+ 	}
+ 
+ 	/* Always scanout image at VRAM offset 0 */
+@@ -670,6 +746,11 @@
+ 	ret = bochs_kms_init(bochs);
+ 	if (ret)
+ 		return ret;
++
++	INIT_DELAYED_WORK(&bochs->reblit_work, bochs_reblit_work);
++	if (bochs_reblit_ms)
++		schedule_delayed_work(&bochs->reblit_work,
++				      msecs_to_jiffies(bochs_reblit_ms));
+ 
+ 	return 0;
+ }
+@@ -755,6 +836,9 @@
+ static void bochs_pci_remove(struct pci_dev *pdev)
+ {
+ 	struct drm_device *dev = pci_get_drvdata(pdev);
++	struct bochs_device *bochs = to_bochs_device(dev);
++
++	cancel_delayed_work_sync(&bochs->reblit_work);
+ 
+ 	drm_dev_unplug(dev);
+ 	drm_atomic_helper_shutdown(dev);

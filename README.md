@@ -12,7 +12,7 @@
 
 - ✅ **QSV/VA-API полный стек**: VA-API encode 4.71x, QSV/MFX 3.03x realtime. Фикс = пакет `libmfx-gen1.2`
 - ✅ **3D GL в госте**: iris на проброшенном i915 (`glxinfo: Mesa Intel ADL-N`, GL 4.6)
-- ❌ **Wayland GNOME (mutter 48.3) → noVNC на q35+std-VGA**: глухой. Рут-козь: **bochs-drm не обновляет VRAM для PRIME-imported framebuffer** (родные dumb-буферы блитятся, импортированные — нет)
+- ❌ **Wayland GNOME (mutter 48.3) → noVNC на q35+std-VGA**: глухой. Рут-козь: **bochs-drm не обновляет VRAM для PRIME-imported framebuffer** (родные dumb-буферы блитятся, импортированные — нет). ⚠️ *Доп-ресёрч 20.09 (docs/upstream-analysis.md): ядро по коду не сломано — bochs 6.16 блитит imported fb на каждом коммите (прямой dma_buf_vmap чужого буфера); не слает кадры mutter 48.3 (ZERO-copy дефолт + фолбэк только при провале импорта, а импорт у bochs проходит). Лечащий патч: mutter `bbeb8bdca` / MR !4576 (49.0) — env работает и в CPU-пути*
 - ✅ **Финал: откат на базу i440fx + qxl/SPICE + X11** — конфигурация, работавшая годами
 - 🐛 Побочные баги по пути: зомби systemd-logind, мёртвый env-override mutter, gdm-runtime-config в неочевидном месте
 
@@ -228,6 +228,16 @@ ffmpeg -hide_banner -init_hw_device vaapi=va:/dev/dri/renderD128 \
 
 Уверенность: высокая по механике «VRAM = fbcon-кадр» (глаза юзера + 2-цветный screendump + imported=yes в state); точный отказ (memcpy не вызывается / не работает на foreign sgt) требует подтверждения — QMP `pmemsave` VRAM или патч-эксперимент.
 
+> ⚠️ **Апдейт 20.09 (upstream-ресёрч суб-агентами; полный разбор: docs/upstream-analysis.md):**
+> 1. «bochs не обновляет VRAM для imported fb» — **опровергнуто по коду**: bochs-drm 6.16 (`bochs_primary_plane_helper_atomic_update`, L440–470) блитит imported fb на каждом atomic-коммите: `drm_fb_memcpy` с src = прямой `dma_buf_vmap` чужого i915-буфера (shadow-plane = живой vmap, не копия), после ожидания i915 render-fence. Ядро обновляет VRAM только в commit-tail (нет vblank/таймеров/self-refresh) → не слает кадры mutter.
+> 2. ftrace «seq=0 раз в 60с» — **переинтерпретировано**: у bochs нет vblank → каждый флип завершается fake-vblank мгновенно с seq=0 (drm_vblank.c L1135). «seq=0 раз в 60с» = mutter реально коммитит ~раз в минуту, ядро пайплайн НЕ блокирует (подтверждено апстримом: `bde44378397b` «drm/bochs: Use vblank timer», 6.19). Для детекции коммитов трейсить `bochs_primary_plane_helper_atomic_update`, не vblank-ивенты.
+> 3. «6.12→6.16 без изменений» — совпадение симптома, не ядра: в 6.12 bochs был на GEM VRAM helpers **без PRIME-импорта вообще** (mutter фолбэкал в CPU-copy и работал); путь ZERO-copy открылся с GEM SHMEM-конверсией 6.13 (`2037174993c8` + `c3ac343c1448`).
+> 4. **Лечащий апстрим-патч: mutter `bbeb8bdca` (MR !4576, 49.0)** «renderer/native: Unify copy mode initialization» — env `MUTTER_DEBUG_MULTI_GPU_FORCE_COPY_MODE` теперь работает и в non-accelerated (CPU) пути (`init_secondary_gpu_data_cpu()` удалена, getenv-оверрайд единый); дефолт ZERO не менялся ни в 49.0, ни в main. В gnome-48 НЕ бэкпортирован → на 48.3 только cherry-pick (10 строк) или апгрейд mutter. Мотивация MR — DisplayLink (тот же класс non-accelerated secondary GPU).
+> 5. Udev-тег `mutter-device-preferred-primary` на bochs — **подтверждённо не работает**: тег пробивается через hardware-фильтр (`choose_primary_gpu_unchecked`, L2346, лог «selected primary given udev rule»), но затем `choose_primary_gpu()` (L2440–2457) требует EGL-дисплей у primary («The GPU %s chosen as primary is not supported by EGL.») → `meta_renderer_native_initable_init()` фейлится → renderer init фатален → сессия не стартует вовсе. Не патчилось до main.
+> 6. Готов патч-эксперимент для верификации ядра за 5 минут: `docs/sources/bochs-6.16-debug-reblit.patch` (4 параметра `bochs.*`: debug / force_full_update / reblit_ms / reject_imported). Ключевой тест `reblit_ms=500`: VNC ожил при молчащем mutter → ядро живо, виноват mutter.
+> 7. Ядро апстрим-фикса не получит — по коду нечему ломаться (полный git log bochs.c 6.15–6.19+: только `a629feabb53b` drm_panic 6.17, `306c8959b5fd` drm_err 6.18, `bde44378397b` vblank timer 6.19). QEMU вычеркнут: redraw dirty-based (`memory_region_snapshot_and_clear_dirty`, vga.c L1696) — гость не пишет VRAM → dirty нет → surface заморожен.
+> 8. Единственный kernel-edge: пустой damage-blob (num_clips=0) при неизменном src → 0 итераций memcpy (bochs не валидирует damage в atomic_check и, в отличие от virtio-gpu, не форсирует full-update при смене fb).
+
 ---
 
 ## 7. Инцидент-урок процесса
@@ -257,4 +267,5 @@ Open items:
 - QEMU Standard VGA (16MB fb): qemu.org/docs/master/specs/standard-vga.html
 - bochs GEM SHMEM + shadow-plane: dri-devel «drm/bochs: Use GEM SHMEM helpers» (2024)
 - Исходные срезы для этого расследования: `docs/sources/`
+- Доп-ресёрч 20.09 (upstream-патчи, верификация рут-козя по коду, патч-эксперимент bochs): `docs/upstream-analysis.md`
 - Дословные артефакты конфигурации этапа (host/VM/guest, udev-эксперименты, systemd-юниты, замеры): `docs/final-configs.md`
