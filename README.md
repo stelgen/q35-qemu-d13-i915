@@ -237,6 +237,8 @@ ffmpeg -hide_banner -init_hw_device vaapi=va:/dev/dri/renderD128 \
 > 6. Готов патч-эксперимент для верификации ядра за 5 минут: `docs/sources/bochs-6.16-debug-reblit.patch` (4 параметра `bochs.*`: debug / force_full_update / reblit_ms / reject_imported). Ключевой тест `reblit_ms=500`: VNC ожил при молчащем mutter → ядро живо, виноват mutter.
 > 7. Ядро апстрим-фикса не получит — по коду нечему ломаться (полный git log bochs.c 6.15–6.19+: только `a629feabb53b` drm_panic 6.17, `306c8959b5fd` drm_err 6.18, `bde44378397b` vblank timer 6.19). QEMU вычеркнут: redraw dirty-based (`memory_region_snapshot_and_clear_dirty`, vga.c L1696) — гость не пишет VRAM → dirty нет → surface заморожен.
 > 8. Единственный kernel-edge: пустой damage-blob (num_clips=0) при неизменном src → 0 итераций memcpy (bochs не валидирует damage в atomic_check и, в отличие от virtio-gpu, не форсирует full-update при смене fb).
+>
+> ✅ **Верификация 20.09 вечер (суб-агенты: shallow-clone mutter + git.kernel.org + Debian tracker; детали: docs/upstream-analysis.md, «Апдейт 2»):** !4576 подтверждён построчно по диффу (merge `bbeb8bdca`, 28.08.2025, первый тег 49.0); в gnome-48 (до 48.8) бэкпорта НЕТ — на trixie (mutter 48.7 stable) единственный лечебный путь — cherry-pick в 48.x + env через `systemctl edit gdm3` (пакета mutter>48 для trixie нет: backports пуст, experimental=51.0 с chain-deps). Состав !4251 уточнён: 3 коммита (5d07e6946/8245f9f79/b65209856). Лог bochs.c после 6.16 — 6 коммитов, сканаут-путь не тронут → ядро чисто вплоть до master. Community: точного клона нет, ближайшие — mutter#4714/#4317/#5063 (последний — Debian 13/48.7!), gnome-shell#6855, DisplayLink-класс mutter#1023/#2005 + evdi#484.
 
 ---
 

@@ -2,6 +2,18 @@
 
 Доп-расследование поверх README (фаза 3 углублена + новая верификация). Суб-агенты разобрали: mutter 48.3/49.0/main (клон gitlab + тарболы), ядро 6.12/6.16/6.17/6.18/6.19/master (drivers/gpu/drm/tiny/bochs.c + drm-core helpers), virtio-gpu 6.16, QEMU vga.c/bochs-display.c, git-истории torvalds + drm-misc. Все срезы кода ниже сверены с локальными копиями в `docs/sources/` (m-rn.c = mutter 48.3 `meta-renderer-native.c`, m-onscreen.c = `meta-onscreen-native.c`).
 
+> **Апдейт 2 (20.09.2026, вечер) — независимая верификация саб-агентами (анонимный shallow-clone mutter с gitlab, git.kernel.org/lore, Debian tracker). Все выводы апдейта 1 подтверждены, две поправки:**
+>
+> 1. **MR !4576 подтверждён построчно по диффу:** `init_secondary_gpu_data_cpu()` удалена; CPU-путь идёт через `set_copy_mode(gpu_data, default_copy_mode)`, внутри которого `getenv("MUTTER_DEBUG_MULTI_GPU_FORCE_COPY_MODE")` → **env заработает и для non-accelerated secondary**. Merge-коммит = сам `bbeb8bdca0f27f9e071b41f0f346f11214eb7e9b`, 2025-08-28 23:10 UTC, Marge Bot, `Part-of: !4576`; первый тег — **49.0** (`git tag --contains` → 49.0…49.3). Автор Daniel van Vugt, ветка `vanvugt/mutter:make-displaylink-testable-v3`; цитата описания: *«So that DisplayLink can also use MUTTER_DEBUG_MULTI_GPU_FORCE_COPY_MODE to test different copy modes (all are supported by DisplayLink)»*.
+> 2. **Бэкпорта в gnome-48 НЕТ** (три независимые проверки): `git merge-base --is-ancestor bbeb8bdca origin/gnome-48` → NO; в head ветки `gnome-48` (= 48.8) паттерны идентичны 48.3 — `set_default_secondary_gpu_copy_mode` (L1918/2019) + `init_secondary_gpu_data_cpu` (L2043/2062), `set_copy_mode` отсутствует; теги 48.x доходят до **48.8**, фикс ни в одном. Ветки с именем `gnome-48-4` не существует — только одна `gnome-48`.
+> 3. **Поправка к §5 (состав !4251):** реально **3** коммита, не 5: `5d07e6946` (onscreen: allow to force copy mode), `8245f9f79` (allow CPU copy on primary), `b65209856` (docs/multi-gpu) — все 2025-02-19, `Part-of: !4251`, первый тег **48.0**. Указанные ранее `a95644dbd` (2019-07) и `fea6abb4f` (2020-01, тег 3.35.90) — посторонние коммиты без `Part-of`, к !4251 не относятся. Суть не меняется: в диффе !4251 `init_secondary_gpu_data_cpu()` не тронут — env в CPU-путь не попал.
+> 4. **§7 дополнен конкретикой:** точного публичного клона симптома «ZERO-copy импорт успешен → тишина после initial» не найдено — кейс самостоятельный. Ближайшие классы: mutter#4714 (secondary-GPU буферы не проходят KMS-регистрацию → заморозка; лечат тем же `...FORCE_COPY_MODE=primary-gpu-cpu`), mutter#4317 «Secondary GPU image stays frozen» (vanvugt), mutter#5063 «monitors stay dark» (**Debian 13, mutter 48.7**), gnome-shell#6855 (AMD PRIME secondary, эпизодические блэкауты + `Page flip failed EINVAL`), mutter#1023/#2005 + evdi#484 (DisplayLink/EVDI Wayland — класс non-accelerated secondary, мотивировавший !4576), Debian#956121 (blank 2nd display, другая причина).
+> 5. **Kernel-факты уточнены:** серия «drm/bochs: Modernize driver» (tzimmermann) — v2 постинг 02.09.2024, влит 06.09.2024, первый релиз **6.13**; `2037174993c8` = патч 8/10 (+132/−45), `c3ac343c1448` = 9/10. `bde44378397b` «Use vblank timer»: lore `20251008093931.19138-1` (08.10.2025, Acked-by Gerd Hoffmann), commit 15.10.2025, +10 строк, первый релиз **6.19** (в v6.18 отсутствует, в v6.19 присутствует). Лог bochs.c после 6.16 — всего 6 коммитов (drm_err-конверсия, vblank timer, include, rename atomic_state, probe-error put, merge), **сканаут/imported-fb путь не тронут ни одним** → «ядро не сломано» валидно вплоть до текущего master.
+> 6. **Пути обновления mutter на trixie НЕТ:** stable = `48.7-0+deb13u1`, trixie-backports — пакета нет («Package not available in this suite»), experimental = `51.0-1` (accepted 2026-09-15, chain-deps на testing), testing/unstable = 50.4/50.5. Salsa gnome-team/mutter: `debian/trixie` = 48.x, `debian/latest` = 50.5 (vcswatch видит UNRELEASED 51.0-2). → для trixie единственный лечебный путь — **cherry-pick `bbeb8bdca` в 48.x** (single commit, ~10 строк) или снапшот-testing. Бонус: в trixie-backports есть ядра **6.19.x** → vblank-timer доступен: `apt install -t trixie-backports linux-image-amd64` (на заморозку не влияет, экономит CPU на мелких апдейтах — ровно наш кейс «движущийся курсор»).
+> 7. **Udev-дедлок (§6) подтверждён на git-уровне:** в head ветки gnome-48 (48.8) `choose_primary_gpu()` так же жёстко требует EGL-дисплей у primary → тег `mutter-device-preferred-primary` на bochs = фатальный failure renderer init, сессия не стартует. Не патчилось ни в 48.x, ни в 49, ни в main.
+>
+> **Вывод апдейта 2:** анализ устойчив; на trixie лечит только cherry-pick `bbeb8bdca` в 48.3/48.7 + env через `systemctl edit gdm3` (см. §9); патч-прототип `bochs-6.16-debug-reblit.patch` остаётся валидным для любого ядра ≥6.16.
+
 ## Итог в одну строку
 
 **Ядро НЕ сломано: bochs-drm 6.16 блитит PRIME-imported fb корректно на каждом atomic-коммите (прямой `dma_buf_vmap` чужого i915-буфера). Заморозка = mutter 48.3 перестаёт слать кадры в bochs после initial-коммита. Лечащий upstream-патч: mutter `bbeb8bdca` (MR !4576, начиная с 49.0) — делает `MUTTER_DEBUG_MULTI_GPU_FORCE_COPY_MODE` рабочим и в non-accelerated (CPU) пути.**
@@ -51,7 +63,7 @@ getenv в CPU-пути НЕТ (подтверждено кодом в репо).
 | Патч | Что делает | Версия |
 |---|---|---|
 | **mutter `bbeb8bdca0f27f9e071b41f0f346f11214eb7e9b` / MR !4576** «renderer/native: Unify copy mode initialization» (Daniel van Vugt, ветка `make-displaylink-testable-v3`, merged 28.08.2025) | удаляет `init_secondary_gpu_data_cpu()`; CPU-путь идёт через `set_copy_mode()` = тот же getenv-оверрайд → **env работает и для non-accelerated secondary**; дефолт ZERO не меняет | **49.0**; в gnome-48 НЕ бэкпортирован (проверено `merge-base --is-ancestor` на 48.8) |
-| mutter MR !4251 (José Expósito, merged 05.02.2025 → GNOME 48; коммиты 5d07e6946/8245f9f79/a95644dbd/b65209856/fea6abb4f) | добавил env, но **только в accelerated-путь** — потому в 48.x он «мёртв» для bochs | 48.0 |
+| mutter MR !4251 (José Expósito, коммиты 2025-02-19 → GNOME 48.0; ровно 3: 5d07e6946 / 8245f9f79 / b65209856) | добавил env, но **только в accelerated-путь** — потому в 48.x он «мёртв» для bochs | 48.0 |
 | ядро `bde44378397b` «drm/bochs: Use vblank timer» | реальные seq флип-ивентов + пейсинг; на заморозку не влияет | 6.19 |
 | ядро: фикс imported-scanout | **не существует** — полный git log bochs.c (torvalds + drm-misc) после 6.16: только `a629feabb53b` (6.17, drm_panic), `306c8959b5fd` (6.18, drm_err), `bde44378397b` (6.19, vblank timer), `80da96d73509` (6.15, DPMS fix), `b15838b03cd0`/`03ebb1ede056` (2026, мелочи). Фиксить нечего — ядро по коду работает | — |
 | mutter MR !5219 / `2853853c09` «Handle cross GPU buffer scanout» | другой баг (FB-ID коллизии при direct scanout), не наш случай | 2026 |
@@ -73,9 +85,21 @@ getenv в CPU-пути НЕТ (подтверждено кодом в репо).
 
 → `meta_renderer_native_initable_init()` (L2496) возвращает FALSE → renderer init фатален (`meta_backend_create_renderer`) → **gnome-shell/gdm сессия не стартует вовсе**. То же в 49.0 и main — не патчилось до сих пор.
 
-## 7. Community-сигнал
+## 7. Community-сигнал (обновлено апдейтом 2 — см. blockquote в шапке, п.4)
 
-Прямые issue с этим симптомом не найдены (GitLab search API — 401 без auth, веб-поиск пуст). Косвенный, но жирный сигнал: мотивация MR !4576 — **DisplayLink** (тот же класс non-accelerated secondary GPU): «So that DisplayLink can also use MUTTER_DEBUG_MULTI_GPU_FORCE_COPY_MODE to test different copy modes». Публичной конфигурации «GNOME Wayland + noVNC + iGPU passthrough на q35» не существует — недокументированная комбо-зона (как и записано в README).
+Точного публичного клона симптома «ZERO-copy импорт успешен → тишина после initial» не найдено (проверены: GitLab mutter/gnome-shell issues-фиды + `/issues?search=`, Debian BTS, RedHat Bugzilla, evdi GitHub, Arch BBS, Proxmox/Synaptics форумы; Reddit заблокирован для бота) — кейс самостоятельный. Ближайшие классы-родственники:
+
+| Репорт | Симптом | Совпадение с нашей сигнатурой |
+|---|---|---|
+| [mutter#4714](https://gitlab.gnome.org/GNOME/mutter/-/work_items/4714) | secondary-GPU буферы не проходят KMS-регистрацию (`drmModeAddFB failed`, crash-loop) → оба дисплея замерзают; лечат тем же `MUTTER_DEBUG_MULTI_GPU_FORCE_COPY_MODE=primary-gpu-cpu` | да по механике |
+| [mutter#4317](https://gitlab.gnome.org/GNOME/mutter/-/issues/4317) | «Secondary GPU image stays frozen» (Daniel van Vugt, NVIDIA secondary) | по симптоматике |
+| [mutter#5063](https://gitlab.gnome.org/GNOME/mutter/-/issues/5063) | «Already-connected monitors stay dark» (**Debian 13, mutter 48.7**) | близко по стеку |
+| [gnome-shell#6855](https://gitlab.gnome.org/GNOME/gnome-shell/-/work_items/6855) | AMD PRIME secondary: эпизодические блэкауты + цикл `Page flip failed EINVAL` | частичное |
+| [mutter#1023](https://gitlab.gnome.org/GNOME/mutter/-/work_items/1023) | DisplayLink-док: «работает → весь вывод замерзает» (GN 3.34, причина не установлена) | по форме (первый кадр → фриз) |
+| [mutter#2005](https://gitlab.gnome.org/GNOME/mutter/-/work_items/2005), [evdi#484](https://github.com/DisplayLink/evdi/issues/484) | DisplayLink/EVDI Wayland: «ничего не рисует» | класс non-accelerated secondary |
+| [Debian#956121](https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=956121) | blank 2nd display Wayland, mutter 3.34 (другая причина) | нет |
+
+Косвенный, но жирный сигнал: мотивация MR !4576 — **DisplayLink** (тот же класс non-accelerated secondary GPU): «So that DisplayLink can also use MUTTER_DEBUG_MULTI_GPU_FORCE_COPY_MODE to test different copy modes». Публичной конфигурации «GNOME Wayland + noVNC + iGPU passthrough на q35» не существует — недокументированная комбо-зона (как и записано в README).
 
 ## 8. Патч-эксперимент для верификации
 
